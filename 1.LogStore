@@ -1,0 +1,366 @@
+//1.日志库的创建
+
+package mylogger
+
+import (
+	"errors"
+	"fmt"
+	"path"
+	"runtime"
+	"strings"
+)
+
+//自定义一个日志库
+
+//日志库
+/*
+	需求分析
+	1.支持往不同的地方输出日志
+	2.日志分级别
+	2.1 Debug
+	2.2 Trace
+	2.3 Info
+	2.4 Warning
+	2.5 Error
+	2.6 Fatal
+	3.日志要支持开关控制，比如说开发的时候什么级别都能输出，但是上线之后只有INFO级别往下才能输出
+	4.日志要包含有时间、行号、文件名、日志级别、日志信息
+	5.日志文件要切割
+	5.1 按文件大小切割
+		每次记录日志之前都判断一下当前写的这个文件的文件大小
+	5.2 按日期切割
+*/
+
+//设定比较
+const (
+	UNKNOW LogLevel = iota //0
+	DEBUG
+	TRACE
+	INFO
+	WARNING
+	ERROR
+	FATAL
+)
+
+//Logger 日志机构体
+type Logger struct {
+	Level LogLevel
+}
+
+//解析level
+func parseLogLevel(s string) (LogLevel, error) {
+	s = strings.ToUpper(s)
+	switch s {
+	case "DEBUG":
+		return DEBUG, nil
+	case "TRACE":
+		return TRACE, nil
+	case "INFO":
+		return INFO, nil
+	case "WARNING":
+		return WARNING, nil
+	case "ERROR":
+		return ERROR, nil
+	case "FATAL":
+		return FATAL, nil
+	default:
+		err := errors.New("无效的日志级别")
+		return UNKNOW, err
+	}
+}
+func getLogString(lv LogLevel) string {
+	switch lv {
+	case DEBUG:
+		return "DEBUG"
+	case TRACE:
+		return "TRACE"
+	case INFO:
+		return "INFO"
+	case WARNING:
+		return "WARNING"
+	case ERROR:
+		return "ERROR"
+	case FATAL:
+		return "FATAL"
+	default:
+		return "DEBUG"
+	}
+
+}
+func getInfo(skip int) (funcName, fileName string, line int) {
+	pc, file, line, ok := runtime.Caller(skip)
+	if !ok {
+		fmt.Printf("runtime.Caller() failed \n ")
+		return
+	}
+	// fmt.Println(pc)
+	funcName = runtime.FuncForPC(pc).Name() //规定写法
+	fileName = path.Base(file)
+	funcName = strings.Split(funcName, ".")[1]
+	return
+}
+
+
+
+package mylogger
+
+import (
+	"fmt"
+	"os"
+	"path"
+	"time"
+)
+
+//往文件里面写日志相关代码
+
+//FileLogger 定义日志结构
+type FileLogger struct {
+	Level       LogLevel
+	filePath    string //日志文件保存的路径
+	fileName    string //日志文件保存的文件名
+	fileObj     *os.File
+	errfileObj  *os.File
+	maxFilesize int64 //文件大小便于切割
+}
+
+//NewFileLogger 构造函数
+func NewFileLogger(leveStr, fp, fn string, maxsize int64) *FileLogger {
+	logLevel, err := parseLogLevel(leveStr)
+	if err != nil {
+		panic(err)
+	}
+
+	f1 := &FileLogger{
+		Level:       logLevel,
+		filePath:    fp,
+		fileName:    fn,
+		maxFilesize: maxsize,
+	}
+	err = f1.initFile() // 按照文件路径和文件名打开、
+	if err != nil {
+		panic(err)
+	}
+	return f1
+}
+func (f *FileLogger) initFile() error {
+	fullFileName := path.Join(f.filePath, f.fileName)
+	fileObj, err := os.OpenFile(fullFileName, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		fmt.Printf("open log file failed ,err:%v \n", err)
+		return err
+	}
+	errfileObj, err := os.OpenFile(fullFileName+".err", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		fmt.Printf("open err log file failed ,err:%v \n", err)
+		return err
+	}
+	//日志文件都能打开
+	f.fileObj = fileObj
+	f.errfileObj = errfileObj
+	return nil
+
+}
+
+//控制什么级别能输出
+func (f *FileLogger) enable(loglevel LogLevel) bool {
+	return loglevel >= f.Level
+}
+
+//SplitiFile  切割文件函数
+func (f *FileLogger) SplitiFile(file *os.File) (*os.File, error) {
+	//需要切割文件
+	now := time.Now().Format("20060102150405")
+	fileInfo, err := file.Stat()
+	if err != nil {
+		fmt.Printf("get file  info failed, err:%v\n", err)
+		return nil, err
+	}
+	logName := path.Join(f.filePath, fileInfo.Name()) //拿到当前日志文件的完整路径
+	newLogName := fmt.Sprintf("%s.back %s", logName, now)
+	//1.关闭当前日志文件
+	file.Close()
+	//2.备份一下 rename	 xx.log -> xx.log.bak20200602
+	os.Rename(logName, newLogName)
+	//3.打开一个新的日志文件
+	fileObj, err := os.OpenFile(logName, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		fmt.Printf("open log file failed ,err:%v \n", err)
+		return nil, err
+	}
+
+	//4.将打开的新日志文件对象赋值给 f.fileObj
+	return fileObj, nil
+
+}
+
+//Checksize 判断文件的大小
+func (f *FileLogger) Checksize(file *os.File) bool {
+	fileInfo, err := file.Stat()
+	if err != nil {
+		fmt.Printf("get file 1 info failed, err:%v\n", err)
+		return false
+	}
+	//如果当前文件大小 大于等于日志文件的最大值 就应该返回ture
+	return fileInfo.Size() >= f.maxFilesize
+}
+
+//Log 构造函数 用来写文件
+func (f *FileLogger) Log(lv LogLevel, format string, a ...interface{}) {
+	if f.enable(lv) {
+		s := fmt.Sprintf(format, a...)
+		now := time.Now()
+		funcName, fileName, lineNO := getInfo(2)
+		//验证是否需要切割
+		if f.Checksize(f.fileObj) {
+			newFile, err := f.SplitiFile(f.fileObj)
+			if err != nil {
+				fmt.Println("报错")
+				return
+			}
+			f.fileObj = newFile
+		}
+		fmt.Fprintf(f.fileObj, "[%s] [%s] [%s:%s:%d] %s\n", now.Format("2006-01-02 15:31:01"), getLogString(lv), funcName, fileName, lineNO, s)
+		if lv >= ERROR {
+			if f.Checksize(f.errfileObj) {
+				newFile, err := f.SplitiFile(f.errfileObj)
+				if err != nil {
+					return
+				}
+				f.errfileObj = newFile
+			}
+			//如果要记录的日志大于ERROR级别，我还要在err日志文件中在记录一遍
+			fmt.Fprintf(f.errfileObj, "[%s] [%s] [%s:%s:%d] %s\n", now.Format("2006-01-02 15:31:01"), getLogString(lv), funcName, fileName, lineNO, s)
+		}
+	}
+
+}
+
+//Debug 构造函数
+func (f *FileLogger) Debug(format string, a ...interface{}) { //参数这样设计就类似于fmt.Printf
+
+	f.Log(DEBUG, format, a...)
+
+}
+
+//Info 构造函数
+func (f *FileLogger) Info(format string, a ...interface{}) {
+
+	// now := time.Now()
+	// fmt.Printf("[%s] [INFO] %s\n", now.Format("2006-01-02 15:31:01"), s)
+	f.Log(INFO, format, a...)
+
+}
+
+//Warning 构造函数
+func (f *FileLogger) Warning(format string, a ...interface{}) {
+
+	// now := time.Now()
+	// fmt.Printf("[%s] [WARNING] %s\n", now.Format("2006-01-02 15:31:01"), s)
+	f.Log(WARNING, format, a...)
+
+}
+
+//Error 构造函数
+func (f *FileLogger) Error(format string, a ...interface{}) {
+
+	// 	now := time.Now()
+	// 	fmt.Printf("[%s] [ERROR] %s\n", now.Format("2006-01-02 15:31:01"), s)
+	f.Log(ERROR, format, a...)
+
+}
+
+//Fatal 构造函数
+func (f *FileLogger) Fatal(format string, a ...interface{}) {
+
+	// now := time.Now()
+	// fmt.Printf("[%s] [FATAL] %s\n", now.Format("2006-01-02 15:31:01"), s)
+	f.Log(FATAL, format, a...)
+
+}
+
+//Close 关闭文件
+func (f *FileLogger) Close() {
+	f.fileObj.Close()
+	f.errfileObj.Close()
+}
+
+package mylogger
+
+import (
+	"fmt"
+	"time"
+)
+
+//往终端写日志相关内容
+
+//LogLevel 是一个uint16的类型
+type LogLevel uint16
+
+//Newlog 构造函数
+func Newlog(levelStr string) Logger {
+	level, err := parseLogLevel(levelStr)
+	if err != nil {
+		panic(err)
+	}
+	return Logger{
+		Level: level,
+	}
+}
+
+//控制什么级别能输出
+func (l Logger) enable(loglevel LogLevel) bool {
+	return loglevel <= l.Level
+}
+
+//Log 构造函数
+func (l Logger) Log(lv LogLevel, format string, a ...interface{}) {
+	if l.enable(lv) {
+		s := fmt.Sprintf(format, a...)
+		funcName, fileName, lineNO := getInfo(2)
+		now := time.Now()
+		fmt.Printf("[%s] [%s] [%s:%s:%d] %s\n", now.Format("2006-01-02 15:31:01"), getLogString(lv), funcName, fileName, lineNO, s)
+	}
+}
+
+//Debug 构造函数
+func (l Logger) Debug(format string, a ...interface{}) { //参数这样设计就类似于fmt.Printf
+
+	l.Log(DEBUG, format, a...)
+
+}
+
+//Info 构造函数
+func (l Logger) Info(format string, a ...interface{}) {
+
+	// now := time.Now()
+	// fmt.Printf("[%s] [INFO] %s\n", now.Format("2006-01-02 15:31:01"), s)
+	l.Log(INFO, format, a...)
+
+}
+
+//Warning 构造函数
+func (l Logger) Warning(format string, a ...interface{}) {
+
+	// now := time.Now()
+	// fmt.Printf("[%s] [WARNING] %s\n", now.Format("2006-01-02 15:31:01"), s)
+	l.Log(WARNING, format, a...)
+
+}
+
+//Error 构造函数
+func (l Logger) Error(format string, a ...interface{}) {
+
+	// 	now := time.Now()
+	// 	fmt.Printf("[%s] [ERROR] %s\n", now.Format("2006-01-02 15:31:01"), s)
+	l.Log(ERROR, format, a...)
+
+}
+
+//Fatal 构造函数
+func (l Logger) Fatal(format string, a ...interface{}) {
+
+	// now := time.Now()
+	// fmt.Printf("[%s] [FATAL] %s\n", now.Format("2006-01-02 15:31:01"), s)
+	l.Log(FATAL, format, a...)
+
+}
