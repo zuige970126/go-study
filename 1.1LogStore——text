@@ -1,0 +1,28 @@
+//用来编译日志库
+
+package main
+
+import (
+	"studygo/Day06/mylogger"
+)
+
+//测试我们自己写的日志库
+func main() {
+	// log := mylogger.Newlog("error")s
+	log := mylogger.NewFileLogger("Info", "./", "测试1.log", 10*1024)
+	for {
+		log.Debug("这是一条debug的日志")
+		log.Info("这是一条info的日志")
+		log.Error("这是一条Eeeor日志")
+		//time.Sleep(time.Second)
+	}
+
+	// fileObj, err := os.OpenFile("./xx.log", os.O_APPEND|os.O_CREATE|os.O_RDWR, 0644)
+	// if err != nil {
+	// 	fmt.Printf("open file failed ,err:%v", err)
+	// 	return
+	// }
+	// log.SetOutput(fileObj)
+	// log.Println("这是一条日志测试")
+
+}
